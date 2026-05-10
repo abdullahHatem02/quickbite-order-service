@@ -5,6 +5,7 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+.zip
 
 # local experimentation scripts — not tracked
 play/

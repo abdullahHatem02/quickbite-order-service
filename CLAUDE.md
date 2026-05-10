@@ -150,6 +150,24 @@ Every module under `app/<module>/` follows the same skeleton (see `core-service/
 9. **`errors.ts`** — exported `AppError` instances (not classes). Stable wording, stable status codes.
 10. **`types.ts`** — module-level **non-entity** type aliases and helper interfaces shared between service / controller / repo (e.g. `BranchProductRow`, `ReserveStockInput`, response shapes that don't warrant a class). Keep services, controllers, and repos free of inline `interface X { ... }` declarations.
 
+### Inline types — **forbidden**
+
+Never declare `interface` or non-trivial `type` aliases inside service, controller, repository, client, handler, or middleware files. They go in:
+- **`app/<module>/types.ts`** for module-level types (DTO inputs, repo inputs, helper rows).
+- **`lib/<area>/types.ts`** for cross-cutting infra types (e.g. `lib/core-client/types.ts`, `lib/core-events/event-payloads.ts`).
+
+This applies to:
+- Repo function input shapes (e.g. `CreateOrderInput`) — go in module `types.ts`, not `repository/*.ts`.
+- Client response shapes (e.g. `CoreBranchMetadata`) — go in `lib/core-client/types.ts`, not `branch.client.ts`.
+- AMQP / event payload shapes — go in `lib/core-events/event-payloads.ts`, not the handler file.
+- Service method DTOs that aren't request/response DTOs — go in module `types.ts`.
+
+Exception: tiny one-shot tuple types used in a single function body (e.g. `[number, number][]`) are fine inline.
+
+### Throwaway / experimental scripts → `play/`
+
+Anything that's a one-shot script, scratch file, manual smoke-test runner, log dump, or debug artifact — put it under `play/` at the repo root. `play/` is gitignored. **Never** commit ad-hoc `test-*.ts` / `debug-*.ts` files at the repo root or under `src/`. Real automated tests (when we add them) go in `tests/`.
+
 ---
 
 ## 6. Response DTOs — the rule that differs from core
