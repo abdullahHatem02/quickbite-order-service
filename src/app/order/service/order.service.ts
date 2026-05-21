@@ -51,8 +51,10 @@ import {
     findItemsByOrderIds,
     countItemsByOrderIds,
 } from "../repository/order-item.repo";
+import {insertOutboxEvent} from "../../../lib/events/outbox.repo";
+import {EVENT_TYPES} from "../../../lib/events/event-types";
 
-const SERVICE_FEE_MINOR = 10;
+const SERVICE_FEE_MINOR = 1000; // 10.00 EGP / SAR — paid to the platform.
 
 const RESTAURANT_ORDERS_CACHE_PREFIX = (region: string, branchId: number) =>
     `${region}:GET:/api/restaurant/orders?branchId=${branchId}`;
@@ -154,6 +156,18 @@ export class OrderService {
                 })),
                 trx,
             );
+
+            // Transactional outbox — only COD lands as `placed` here.
+            // ONLINE orders start as `pending_payment` and emit `order.placed`
+            // from the Kashier webhook after capture (see kashier-webhook.service.ts).
+            if (order.status === OrderStatus.PLACED) {
+                await insertOutboxEvent(trx, {
+                    aggregateType: "order",
+                    aggregateId: order.publicId,
+                    eventType: EVENT_TYPES.ORDER_PLACED,
+                    payload: buildOrderPlacedPayload(order, items),
+                });
+            }
 
             await trx.commit();
         } catch (err) {
@@ -273,6 +287,20 @@ export class OrderService {
         let updated: OrderEntity;
         try {
             updated = await updateOrderStatus(order.publicId, body.status, stamp, trx);
+
+            // Transactional outbox — pick the matching event type for the
+            // new status. Same trx as the status update so we can't publish
+            // a state we then roll back.
+            const eventType = OUTBOX_EVENT_FOR_STATUS[body.status];
+            if (eventType) {
+                await insertOutboxEvent(trx, {
+                    aggregateType: "order",
+                    aggregateId: updated.publicId,
+                    eventType,
+                    payload: buildOrderTransitionPayload(updated, body.reason, statusActor),
+                });
+            }
+
             await trx.commit();
         } catch (err) {
             await trx.rollback();
@@ -375,3 +403,52 @@ export class OrderService {
     }
 }
 
+// ─── Outbox payload builders ─────────────────────────────────────────────────
+// Kept as module-level helpers (not class methods) so they're easy to unit-test
+// in isolation and don't drag a `this` context into the trx callback.
+
+const OUTBOX_EVENT_FOR_STATUS: Partial<Record<OrderStatus, string>> = {
+    [OrderStatus.ACCEPTED]: EVENT_TYPES.ORDER_ACCEPTED,
+    [OrderStatus.REJECTED]: EVENT_TYPES.ORDER_REJECTED,
+    [OrderStatus.CANCELLED]: EVENT_TYPES.ORDER_CANCELLED,
+};
+
+/** Matches analytics-service contract (docs/api-contracts.md — order.placed payload). */
+function buildOrderPlacedPayload(order: OrderEntity, items: OrderItemEntity[]) {
+    return {
+        orderId: order.publicId,
+        region: order.region,
+        countryCode: order.countryCode,
+        restaurantId: Number(order.restaurantId),
+        branchId: Number(order.branchId),
+        customerId: Number(order.customerId),
+        status: order.status,
+        paymentMethod: order.paymentMethod,
+        subtotal: order.subtotal,
+        deliveryFee: order.deliveryFee,
+        serviceFee: order.serviceFee,
+        total: order.total,
+        currency: order.currency,
+        items: items.map((i) => ({
+            productId: Number(i.productId),
+            quantity: i.quantity,
+            unitPrice: i.unitPriceSnapshot,
+            lineTotal: i.lineTotal,
+        })),
+        placedAt: order.createdAt.toISOString(),
+    };
+}
+
+function buildOrderTransitionPayload(order: OrderEntity, reason: string | undefined, actor: StatusActor) {
+    return {
+        orderId: order.publicId,
+        region: order.region,
+        restaurantId: Number(order.restaurantId),
+        branchId: Number(order.branchId),
+        customerId: Number(order.customerId),
+        status: order.status,
+        reason: reason ?? null,
+        actor,
+        occurredAt: order.updatedAt.toISOString(),
+    };
+}

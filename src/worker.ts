@@ -10,6 +10,7 @@ import {TOKENS} from "./lib/di/tokens";
 import {startAll, stopAll} from "./lib/jobs/scheduler";
 import {registerOrderModuleCoreEventHandlers} from "./app/order/core-events.handlers";
 import {registerAssignmentJobs} from "./app/assignment/jobs";
+import {registerOutboxDrainJobs} from "./lib/events/jobs";
 
 /**
  * Background worker process. All it does is boot the shared infra and hand
@@ -26,6 +27,7 @@ container.registerInstance(TOKENS.WsServer, io);
 
 // ── Job registrations ───────────────────────────────────────────────────
 registerAssignmentJobs();
+registerOutboxDrainJobs();
 // registerOrderArchiveJobs
 // (Future jobs land here: payouts sweep, archival, presence GC, etc.)
 

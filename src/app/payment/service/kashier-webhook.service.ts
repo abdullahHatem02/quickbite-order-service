@@ -25,6 +25,8 @@ import {
     PaymentProviderName,
 } from "../enums";
 import {InvalidWebhookSignatureError, MalformedWebhookError} from "../errors";
+import {insertOutboxEvent} from "../../../lib/events/outbox.repo";
+import {EVENT_TYPES} from "../../../lib/events/event-types";
 
 const KASHIER_PROVIDER_ID = PAYMENT_PROVIDER_IDS[PaymentProviderName.KASHIER];
 
@@ -131,11 +133,63 @@ export class KashierWebhookService {
                     idempotencyKey: `kashier:${envelope.data.transactionId}`,
                 }, trx);
 
+                // payment.completed — fired for both `pending_payment → placed`
+                // captures and for any out-of-band capture events. In-trx.
+                await insertOutboxEvent(trx, {
+                    aggregateType: "payment",
+                    aggregateId: order.publicId,
+                    eventType: EVENT_TYPES.PAYMENT_COMPLETED,
+                    payload: {
+                        orderId: order.publicId,
+                        region,
+                        restaurantId: Number(order.restaurantId),
+                        branchId: Number(order.branchId),
+                        customerId: Number(order.customerId),
+                        provider: "kashier",
+                        providerReferenceId: envelope.data.transactionId,
+                        amount: session.amount,
+                        currency: session.currency,
+                        method: "online",
+                        completedAt: new Date().toISOString(),
+                    },
+                });
+
                 if (order.status === OrderStatus.PENDING_PAYMENT) {
                     const placed = await updateOrderStatus(order.publicId, OrderStatus.PLACED, null, trx);
+
+                    // Now the order is officially placed — emit order.placed
+                    // for the analytics contract, items snapshot in the same trx.
+                    const items = await findItemsByOrderIds([placed.id], trx);
+                    await insertOutboxEvent(trx, {
+                        aggregateType: "order",
+                        aggregateId: placed.publicId,
+                        eventType: EVENT_TYPES.ORDER_PLACED,
+                        payload: {
+                            orderId: placed.publicId,
+                            region: placed.region,
+                            countryCode: placed.countryCode,
+                            restaurantId: Number(placed.restaurantId),
+                            branchId: Number(placed.branchId),
+                            customerId: Number(placed.customerId),
+                            status: placed.status,
+                            paymentMethod: placed.paymentMethod,
+                            subtotal: placed.subtotal,
+                            deliveryFee: placed.deliveryFee,
+                            serviceFee: placed.serviceFee,
+                            total: placed.total,
+                            currency: placed.currency,
+                            items: items.map((i) => ({
+                                productId: Number(i.productId),
+                                quantity: i.quantity,
+                                unitPrice: i.unitPriceSnapshot,
+                                lineTotal: i.lineTotal,
+                            })),
+                            placedAt: placed.createdAt.toISOString(),
+                        },
+                    });
+
                     await trx.commit();
                     // WS announcements after commit so we never publish a state we then roll back.
-                    const items = await findItemsByOrderIds([placed.id], conn);
                     this.io.to(`branch:${placed.branchId}`).emit("order.created", OrderSummaryResponseDTO.from(placed, items.length));
                     this.io.to(`customer:${placed.customerId}`).emit("order.status_changed", OrderStatusResponseDTO.from(placed));
                     return;
@@ -164,6 +218,25 @@ export class KashierWebhookService {
                 dstAccId: null,
                 idempotencyKey: `kashier:${envelope.data.transactionId}`,
             }, trx);
+
+            await insertOutboxEvent(trx, {
+                aggregateType: "payment",
+                aggregateId: order.publicId,
+                eventType: EVENT_TYPES.PAYMENT_FAILED,
+                payload: {
+                    orderId: order.publicId,
+                    region,
+                    restaurantId: Number(order.restaurantId),
+                    branchId: Number(order.branchId),
+                    customerId: Number(order.customerId),
+                    provider: "kashier",
+                    providerReferenceId: envelope.data.transactionId,
+                    amount: session.amount,
+                    currency: session.currency,
+                    method: "online",
+                    failedAt: new Date().toISOString(),
+                },
+            });
 
             await trx.commit();
         } catch (err) {

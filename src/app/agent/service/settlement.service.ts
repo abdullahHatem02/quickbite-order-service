@@ -18,6 +18,8 @@ import {insertEarning} from "../repository/agent-earning.repo";
 import {PresenceService} from "./presence.service";
 import {NotYourTaskError} from "../errors";
 import {AssignmentService} from "../../assignment/service/assignment.service";
+import {insertOutboxEvent} from "../../../lib/events/outbox.repo";
+import {EVENT_TYPES} from "../../../lib/events/event-types";
 
 /**
  * Single trx that runs on the `delivered` transition. Handles:
@@ -104,6 +106,47 @@ export class SettlementService {
                 }, trx);
             }
 
+            // Service fee: customer paid it as part of `total`. For COD the
+            // cod_collection above credits `total` to the restaurant owner;
+            // the service fee is owed back to the platform. Book the
+            // restaurant → platform transfer explicitly so finance reconciles.
+            if (order.serviceFee > 0) {
+                await createTransactionIdempotent({
+                    region,
+                    orderId: order.id,
+                    transactionType: TransactionType.ADJUSTMENT,
+                    method: TransactionMethod.SYSTEM,
+                    providerId: null,
+                    providerReferenceId: null,
+                    status: TransactionStatus.SUCCEEDED,
+                    amount: order.serviceFee,
+                    currency: order.currency,
+                    srcAccId: order.restaurantOwnerId,
+                    dstAccId: null,
+                    idempotencyKey: `service-fee:${order.publicId}`,
+                }, trx);
+            }
+
+            // Delivery fee: same story — customer paid it inside `total`, it's
+            // not the restaurant's money. Book restaurant → platform; the
+            // agent's share is paid out separately via agent_earnings.
+            if (order.deliveryFee > 0) {
+                await createTransactionIdempotent({
+                    region,
+                    orderId: order.id,
+                    transactionType: TransactionType.ADJUSTMENT,
+                    method: TransactionMethod.SYSTEM,
+                    providerId: null,
+                    providerReferenceId: null,
+                    status: TransactionStatus.SUCCEEDED,
+                    amount: order.deliveryFee,
+                    currency: order.currency,
+                    srcAccId: order.restaurantOwnerId,
+                    dstAccId: null,
+                    idempotencyKey: `delivery-fee:${order.publicId}`,
+                }, trx);
+            }
+
             // Restaurant balance: net of commission.
             const netToRestaurant = order.subtotal - commission;
             if (netToRestaurant !== 0) {
@@ -126,6 +169,29 @@ export class SettlementService {
 
             // Finally flip status to delivered.
             updated = await updateOrderStatus(publicId, OrderStatus.DELIVERED, "delivered_at", trx);
+
+            // Transactional outbox — order.delivered for analytics + future consumers.
+            // Same trx so a publish never escapes a rolled-back settlement.
+            await insertOutboxEvent(trx, {
+                aggregateType: "order",
+                aggregateId: updated.publicId,
+                eventType: EVENT_TYPES.ORDER_DELIVERED,
+                payload: {
+                    orderId: updated.publicId,
+                    region: updated.region,
+                    restaurantId: Number(updated.restaurantId),
+                    branchId: Number(updated.branchId),
+                    customerId: Number(updated.customerId),
+                    deliveryAgentId: agentId,
+                    total: updated.total,
+                    subtotal: updated.subtotal,
+                    deliveryFee: updated.deliveryFee,
+                    commission,
+                    currency: updated.currency,
+                    paymentMethod: updated.paymentMethod,
+                    deliveredAt: updated.deliveredAt?.toISOString() ?? new Date().toISOString(),
+                },
+            });
 
             await trx.commit();
         } catch (err) {

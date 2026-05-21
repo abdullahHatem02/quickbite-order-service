@@ -36,6 +36,11 @@ const baseSchema = z.object({
     RABBITMQ_CORE_EVENTS_DLQ: z.string().default("order-service.core-events.dlq"),
     RABBITMQ_PREFETCH: z.string().default("32"),
 
+    // Outbound: order.events exchange consumed by analytics-service & friends
+    RABBITMQ_ORDER_EVENTS_EXCHANGE: z.string().default("order.events"),
+    OUTBOUND_EVENTS_DRAIN_TICK_SEC: z.string().default("2"),
+    OUTBOUND_EVENTS_BATCH_SIZE: z.string().default("100"),
+
     CORE_SERVICE_BASE_URL: z.string(),
     CORE_INTERNAL_API_KEY: z.string(),
 
@@ -159,6 +164,12 @@ export const env = {
         dlx: parsed.RABBITMQ_CORE_EVENTS_DLX,
         dlq: parsed.RABBITMQ_CORE_EVENTS_DLQ,
         prefetch: Number(parsed.RABBITMQ_PREFETCH),
+    },
+
+    outboundEvents: {
+        exchange: parsed.RABBITMQ_ORDER_EVENTS_EXCHANGE,
+        drainTickSec: Number(parsed.OUTBOUND_EVENTS_DRAIN_TICK_SEC),
+        batchSize: Number(parsed.OUTBOUND_EVENTS_BATCH_SIZE),
     },
 
     core: {

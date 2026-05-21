@@ -13,9 +13,14 @@ import {
 } from "./types";
 
 const BRANCH_CACHE_TTL = toSeconds(1, "h");
+const PRODUCT_CACHE_TTL = toSeconds(1, "h");
 
 function branchCacheKey(branchId: number): string {
     return `core:branch:${branchId}`;
+}
+
+function productCacheKey(branchId: number, productId: number): string {
+    return `core:branch:${branchId}:product:${productId}`;
 }
 
 function cache(): ICacheProvider {
@@ -96,19 +101,68 @@ export async function getBranchesByIds(
     return result;
 }
 
+/**
+ * Read-through cache for branch products. Entries live at
+ * `core:branch:<bid>:product:<pid>` and are kept fresh by the inbound
+ * `product.price.changed` / `product.stock.changed` handlers in
+ * core-data-cache.service. Only the missing ids hit core's HTTP endpoint.
+ */
 export async function getBranchProducts(
     branchId: number,
     productIds: number[],
     correlationId?: string,
 ): Promise<CoreBranchProduct[]> {
     if (productIds.length === 0) return [];
-    const ids = productIds.join(",");
+    const c = cache();
+    const unique = Array.from(new Set(productIds));
+    const cached: CoreBranchProduct[] = [];
+    const misses: number[] = [];
+
+    await Promise.all(
+        unique.map(async (pid) => {
+            const raw = await c.get(productCacheKey(branchId, pid));
+            if (!raw) {
+                misses.push(pid);
+                return;
+            }
+            try {
+                const parsed = JSON.parse(raw) as Partial<CoreBranchProduct>;
+                // Event-driven cache entries are partial — they hold price /
+                // stock / isAvailable but no name/imageUrl. Treat as a miss
+                // so we fetch the full row from core.
+                if (parsed.name === undefined) {
+                    misses.push(pid);
+                    return;
+                }
+                cached.push(parsed as CoreBranchProduct);
+            } catch {
+                misses.push(pid);
+            }
+        }),
+    );
+
+    if (misses.length === 0) return cached;
+
+    const ids = misses.join(",");
     const res = await coreClient.request<CoreEnvelope<CoreBranchProduct[]>>({
         method: "GET",
         path: `/api/internal/branches/${branchId}/products?ids=${encodeURIComponent(ids)}`,
         correlationId,
     });
-    return res.data;
+
+    // Populate the cache with the full rows we just fetched. Events that
+    // arrive later for these products will MERGE on top via core-data-cache.
+    await Promise.all(
+        res.data.map((p) =>
+            c
+                .set(productCacheKey(branchId, Number(p.productId)), JSON.stringify(p), PRODUCT_CACHE_TTL)
+                .catch((err) =>
+                    logger.warn("getBranchProducts cache set failed", {branchId, productId: p.productId, error: (err as Error).message}),
+                ),
+        ),
+    );
+
+    return [...cached, ...res.data];
 }
 
 export async function reserveStock(

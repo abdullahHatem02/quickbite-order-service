@@ -17,10 +17,10 @@ import {
  *   - Cache writes / invalidations driven by inbound core-events.
  *   - Reject-orders flag for branches that go offline (read on placement).
  *
- * Read-throughs are NOT yet wired (every order placement still hits core's
- * cached endpoint directly). This service exists so that when load testing
- * justifies an order-service-side cache, the writers are already correct
- * and we just flip the readers.
+ * Read-throughs live in `lib/core-client/branch.client.ts` (`getBranch`,
+ * `getBranchesByIds`, `getBranchProducts`) — they share the same Redis keys
+ * this service writes to (`core:branch:<id>`, `core:branch:<bid>:product:<pid>`),
+ * so an inbound event invalidates / merges the read-through cache entry too.
  */
 const PRODUCT_CACHE_TTL = toSeconds(1, "h");
 const BRANCH_REJECT_FLAG_TTL = toSeconds(7, "d");
