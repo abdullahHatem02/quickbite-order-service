@@ -4,9 +4,12 @@
 # Usage on the other laptop:
 #     docker compose up -d --build           # build images + start everything
 #     docker compose logs -f order-service   # tail app logs
-#     docker compose run --rm migrate        # run DB migrations once
 #     docker compose down                    # stop, keep data
 #     docker compose down -v                 # stop AND wipe DB volumes
+#
+# Migrations are NOT run inside the container (the runtime image has no
+# TypeScript). Run them from the host once the stack is up:
+#     npm run migrate:all
 # =====================================================================
 
 # "services" lists each container we want. Each entry becomes a
@@ -92,34 +95,6 @@ services:
       retries: 10
 
   # -------------------------------------------------------------------
-  # migrate — one-shot job that runs Knex migrations against every shard.
-  # Not a long-running service: it exits when done. Run on demand with:
-  #     docker compose run --rm migrate
-  # -------------------------------------------------------------------
-  migrate:
-    build:
-      context: .                 # build from this directory
-      dockerfile: Dockerfile     # using the Dockerfile we wrote
-    container_name: quickbite-migrate
-    # Override the default CMD to run the migrate-all script instead of the server.
-    command: ["npm", "run", "migrate:all"]
-    # Don't restart this one-shot job.
-    restart: "no"
-    env_file:
-      - .env                     # same env file the app uses
-    environment:
-      # Inside the docker network, hostnames are the service names below.
-      # These override whatever is in .env so the app talks to the
-      # containers (not "localhost", which would be the container itself).
-      DB_eg_HOST: postgres
-      DB_ksa_HOST: postgres
-      ARCHIVE_DB_eg_HOST: postgres
-      ARCHIVE_DB_ksa_HOST: postgres
-    depends_on:
-      postgres:
-        condition: service_healthy   # wait until Postgres accepts queries
-
-  # -------------------------------------------------------------------
   # order-service — the HTTP + WebSocket server (src/server.ts)
   # -------------------------------------------------------------------
   order-service:
@@ -151,9 +126,6 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      # migrate must finish BEFORE the app starts, otherwise schema is missing.
-      migrate:
-        condition: service_completed_successfully
 
   # -------------------------------------------------------------------
   # order-worker — background jobs (assignment ticker, outbox drain, archival)
@@ -184,8 +156,6 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
 
 # =====================================================================
 # Named volumes — Docker-managed disk so DB / cache / broker data
