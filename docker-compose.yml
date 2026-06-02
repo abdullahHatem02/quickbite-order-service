@@ -1,0 +1,197 @@
+# =====================================================================
+# QuickBite — order-service local stack
+#
+# Usage on the other laptop:
+#     docker compose up -d --build           # build images + start everything
+#     docker compose logs -f order-service   # tail app logs
+#     docker compose run --rm migrate        # run DB migrations once
+#     docker compose down                    # stop, keep data
+#     docker compose down -v                 # stop AND wipe DB volumes
+# =====================================================================
+
+# "services" lists each container we want. Each entry becomes a
+# container that other services can reach by name (DNS) on the
+# internal network Docker creates for this compose project.
+services:
+
+  # -------------------------------------------------------------------
+  # Postgres — one instance, four logical databases (see docker/postgres-init.sql)
+  # -------------------------------------------------------------------
+  postgres:
+    # Official image. Pin a major tag so a future "latest" doesn't break us.
+    image: postgres:16
+    # Fixed container name makes `docker exec -it quickbite-postgres psql ...` predictable.
+    container_name: quickbite-postgres
+    # Auto-restart if the container crashes; don't restart if we explicitly stopped it.
+    restart: unless-stopped
+    environment:
+      # Bootstrap superuser created on first start.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Default DB; the others get created by the init script below.
+      POSTGRES_DB: postgres
+    ports:
+      # host:container — exposes Postgres to your laptop on 5432 so you can
+      # connect from DataGrip / psql on the host. Remove if not needed.
+      - "5432:5432"
+    volumes:
+      # Persistent data — survives `docker compose down`, lost on `down -v`.
+      - postgres-data:/var/lib/postgresql/data
+      # SQL files in /docker-entrypoint-initdb.d run ONCE on first boot.
+      # Used to create the 4 region/archive databases.
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      # `pg_isready` returns 0 when Postgres accepts connections. The app
+      # waits on this via `depends_on.condition: service_healthy`.
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s       # check every 5s
+      timeout: 3s        # mark unhealthy if a probe takes >3s
+      retries: 10        # tolerate 10 failed probes before "unhealthy"
+
+  # -------------------------------------------------------------------
+  # Redis — cache + Socket.IO Redis adapter + idempotency keys
+  # -------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine        # alpine = small image
+    container_name: quickbite-redis
+    restart: unless-stopped
+    # --appendonly yes turns on AOF persistence so cache + idempotency
+    # keys survive container restarts.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"              # expose to host for redis-cli debugging
+    volumes:
+      - redis-data:/data         # persist AOF / RDB files
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # -------------------------------------------------------------------
+  # RabbitMQ — inbound async events from core-service (cache invalidation)
+  # -------------------------------------------------------------------
+  rabbitmq:
+    # "-management" variant ships the web UI at http://localhost:15672
+    image: rabbitmq:3.13-management-alpine
+    container_name: quickbite-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"     # AMQP protocol port — the app connects here
+      - "15672:15672"   # Management UI in the browser
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      # Built-in diagnostic. Container is "healthy" only when broker is ready.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------------------------------------------------
+  # migrate — one-shot job that runs Knex migrations against every shard.
+  # Not a long-running service: it exits when done. Run on demand with:
+  #     docker compose run --rm migrate
+  # -------------------------------------------------------------------
+  migrate:
+    build:
+      context: .                 # build from this directory
+      dockerfile: Dockerfile     # using the Dockerfile we wrote
+    container_name: quickbite-migrate
+    # Override the default CMD to run the migrate-all script instead of the server.
+    command: ["npm", "run", "migrate:all"]
+    # Don't restart this one-shot job.
+    restart: "no"
+    env_file:
+      - .env                     # same env file the app uses
+    environment:
+      # Inside the docker network, hostnames are the service names below.
+      # These override whatever is in .env so the app talks to the
+      # containers (not "localhost", which would be the container itself).
+      DB_eg_HOST: postgres
+      DB_ksa_HOST: postgres
+      ARCHIVE_DB_eg_HOST: postgres
+      ARCHIVE_DB_ksa_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy   # wait until Postgres accepts queries
+
+  # -------------------------------------------------------------------
+  # order-service — the HTTP + WebSocket server (src/server.ts)
+  # -------------------------------------------------------------------
+  order-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quickbite-order-service
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      # Bind 0.0.0.0 inside the container so the port mapping below works.
+      PORT: "4000"
+      # Override hostnames to use the docker-network service names.
+      DB_eg_HOST: postgres
+      DB_ksa_HOST: postgres
+      ARCHIVE_DB_eg_HOST: postgres
+      ARCHIVE_DB_ksa_HOST: postgres
+      REDIS_HOST: redis
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    ports:
+      # Your laptop's :4000 -> container's :4000.
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      # migrate must finish BEFORE the app starts, otherwise schema is missing.
+      migrate:
+        condition: service_completed_successfully
+
+  # -------------------------------------------------------------------
+  # order-worker — background jobs (assignment ticker, outbox drain, archival)
+  # Same image as the server, just a different entrypoint command.
+  # -------------------------------------------------------------------
+  order-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: quickbite-order-worker
+    restart: unless-stopped
+    # Run the worker entrypoint instead of the HTTP server.
+    command: ["node", "dist/worker.js"]
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DB_eg_HOST: postgres
+      DB_ksa_HOST: postgres
+      ARCHIVE_DB_eg_HOST: postgres
+      ARCHIVE_DB_ksa_HOST: postgres
+      REDIS_HOST: redis
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+# =====================================================================
+# Named volumes — Docker-managed disk so DB / cache / broker data
+# survives `docker compose down`. Deleted only via `down -v`.
+# =====================================================================
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
