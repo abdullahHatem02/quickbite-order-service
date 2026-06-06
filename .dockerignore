@@ -34,7 +34,15 @@ play
 Dockerfile
 .dockerignore
 docker-compose.yml
+docker-compose.test.yml
 docker
+
+# CI + tests never run inside the runtime image
+.github
+tests
+jest.config.js
+jest.integration.config.js
+tsconfig.test.json
 
 # Local archives
 *.zip

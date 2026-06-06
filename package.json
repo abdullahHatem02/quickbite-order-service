@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "test": "jest",
+    "test:integration": "jest --config jest.integration.config.js",
     "build": "tsc",
     "dev": "tsx watch src/server.ts",
     "worker": "tsx watch src/worker.ts",
@@ -46,11 +48,14 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/jest": "^30.0.0",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.11.10",
     "@types/uuid": "^10.0.0",
+    "jest": "^30.4.2",
     "socket.io-client": "^4.8.3",
+    "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
