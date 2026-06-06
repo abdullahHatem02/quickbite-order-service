@@ -96,3 +96,10 @@ export interface AssertTransitionResult {
     stamp: string | null;
 }
 
+/** One cell of the status machine table in `order-status.service`. */
+export interface TransitionRule {
+    actors: StatusActor[];
+    stamp: string | null;
+    requiresReason?: boolean;
+}
+

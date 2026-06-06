@@ -17,6 +17,7 @@ import {upsertIncrement} from "../../finance/repository/restaurant-balance.repo"
 import {insertEarning} from "../repository/agent-earning.repo";
 import {PresenceService} from "./presence.service";
 import {NotYourTaskError} from "../errors";
+import {OrderNotFoundError} from "../../order/errors";
 import {AssignmentService} from "../../assignment/service/assignment.service";
 import {insertOutboxEvent} from "../../../lib/events/outbox.repo";
 import {EVENT_TYPES} from "../../../lib/events/event-types";
@@ -50,7 +51,7 @@ export class SettlementService {
         // Pre-trx fetch (read-only) so we can pull commissionBps from core's cache
         // without holding row locks across an HTTP call.
         const order = await findOrderByPublicId(publicId, conn);
-        if (!order) throw new Error("OrderNotFound");
+        if (!order) throw OrderNotFoundError;
         if (order.deliveryAgentId !== agentId) throw NotYourTaskError;
 
         // Branch fetch is cached in core's read-through; failure => commission stays 0.

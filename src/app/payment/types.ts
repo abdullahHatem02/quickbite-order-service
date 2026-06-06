@@ -1,4 +1,20 @@
 import {PaymentSessionStatus, TransactionType, TransactionMethod, TransactionStatus} from "./enums";
+import {PaymentSessionEntity} from "./entity/payment-session.entity";
+import {TransactionEntity} from "./entity/transaction.entity";
+import {PaymentInitResponseDTO} from "./dto/payment.response.dto";
+
+/** Result of `PaymentService.initOnlinePayment` — session + its response DTO. */
+export interface InitOnlinePaymentResult {
+    session: PaymentSessionEntity;
+    expiresAt: string;
+    dto: PaymentInitResponseDTO;
+}
+
+/** A transaction joined to its order's restaurant id (NULL for payouts etc.). */
+export interface TransactionWithOwner {
+    transaction: TransactionEntity;
+    restaurantId: number | null;
+}
 
 export interface CreateSessionRowInput {
     region: string;

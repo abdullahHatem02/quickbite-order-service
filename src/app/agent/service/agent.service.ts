@@ -11,7 +11,8 @@ import {AssignmentService} from "../../assignment/service/assignment.service";
 import {SettlementService} from "./settlement.service";
 import {DeliveryTaskResponseDTO, AgentEarningsResponseDTO} from "../dto/agent.response.dto";
 import {listByAgent, sumByAgent} from "../repository/agent-earning.repo";
-import {NotYourTaskError} from "../errors";
+import {NotYourTaskError, OrderNotInAssignedStateError, InvalidAgentTransitionError} from "../errors";
+import {OrderNotFoundError} from "../../order/errors";
 
 const TASK_LIST_LIMIT = 50;
 
@@ -43,14 +44,14 @@ export class AgentService {
         }
 
         if (target !== OrderStatus.PICKED) {
-            throw new Error(`agent cannot transition to ${target}`);
+            throw InvalidAgentTransitionError;
         }
 
         const conn = db(region);
         const order = await findOrderByPublicId(publicId, conn);
-        if (!order) throw new Error("OrderNotFound");
+        if (!order) throw OrderNotFoundError;
         if (order.deliveryAgentId !== agentId) throw NotYourTaskError;
-        if (order.status !== OrderStatus.ASSIGNED) throw new Error("OrderNotInAssignedState");
+        if (order.status !== OrderStatus.ASSIGNED) throw OrderNotInAssignedStateError;
 
         const trx = await conn.transaction();
         let updated;

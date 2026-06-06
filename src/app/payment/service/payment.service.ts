@@ -20,12 +20,7 @@ import {
     PaymentNotFoundError,
     PaymentProviderUnavailableError,
 } from "../errors";
-
-interface InitOnlinePaymentResult {
-    session: PaymentSessionEntity;
-    expiresAt: string;
-    dto: PaymentInitResponseDTO;
-}
+import {InitOnlinePaymentResult} from "../types";
 
 @injectable()
 export class PaymentService {

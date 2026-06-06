@@ -8,3 +8,5 @@ export const OrderAlreadyClaimedError     = new AppError("OrderAlreadyClaimed", 
 export const OrderNotInReadyStateError    = new AppError("OrderNotInReadyState", 409);
 export const NotYourTaskError             = new AppError("NotYourTask", 403);
 export const AgentNotOnlineError          = new AppError("AgentNotOnline", 409);
+export const OrderNotInAssignedStateError = new AppError("OrderNotInAssignedState", 409);
+export const InvalidAgentTransitionError  = new AppError("InvalidAgentTransition", 400);
