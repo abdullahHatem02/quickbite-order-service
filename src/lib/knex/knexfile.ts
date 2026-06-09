@@ -29,6 +29,7 @@ const config: Knex.Config = {
         user: shard.username,
         password: shard.password,
         database: shard.name,
+        ssl: env.isProduction ? {rejectUnauthorized: false} : false,
     },
     pool: {min: 0, max: env.db.poolMax},
     migrations: {
